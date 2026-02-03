@@ -1,0 +1,14 @@
+torch
+transformers
+qwen-asr
+huggingface_hub
+accelerate
+soundfile
+sentencepiece
+scipy
+einops
+librosa
+modelscope
+funasr
+ffmpeg-python
+torchaudio
