@@ -20,7 +20,8 @@ except ImportError:
 
 # ================= 路径配置 =================
 
-ASR_MODELS_DIR = os.path.join(folder_paths.models_dir, "ASR")
+# 路径已修改为 models/TTS
+ASR_MODELS_DIR = os.path.join(folder_paths.models_dir, "TTS")
 if not os.path.exists(ASR_MODELS_DIR):
     os.makedirs(ASR_MODELS_DIR)
 
@@ -114,7 +115,9 @@ def load_asr_model(model_name, device, auto_download=False, source="ModelScope",
                 }
 
             model = Qwen3ASRModel.from_pretrained(model_path, **load_kwargs)
-            model.eval()
+            
+            # [修复] Qwen3ASRModel 是一个 wrapper，没有 eval() 方法，也无需调用。
+            # model.eval()  <--- 已删除此行
             
             LOADED_ASR_MODELS[cache_key] = model
             print("[ASR] Model loaded successfully.")
