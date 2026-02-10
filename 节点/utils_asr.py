@@ -20,7 +20,7 @@ except ImportError:
 
 # ================= 路径配置 =================
 
-# 路径已修改为 models/TTS
+# 路径固定为 models/TTS
 ASR_MODELS_DIR = os.path.join(folder_paths.models_dir, "TTS")
 if not os.path.exists(ASR_MODELS_DIR):
     os.makedirs(ASR_MODELS_DIR)
@@ -52,7 +52,7 @@ def load_asr_model(model_name, device, auto_download=False, source="ModelScope",
     if not HAS_QWEN_ASR:
         raise ImportError("Critical Dependency Missing: Please run 'pip install qwen-asr'")
 
-    # 1. 确定主模型路径
+    # --- 1. 准备主模型路径 ---
     target_folder_name = model_name.split("/")[-1] if "/" in model_name else model_name
     model_path = os.path.join(ASR_MODELS_DIR, target_folder_name)
     
@@ -63,36 +63,46 @@ def load_asr_model(model_name, device, auto_download=False, source="ModelScope",
             try:
                 _download_model_logic(repo_id, model_path, source)
             except Exception as e:
-                raise Exception(f"ASR Download failed: {e}")
+                raise Exception(f"ASR Main Model Download failed: {e}")
         else:
-            raise FileNotFoundError(f"ASR Model {model_name} not found locally (Path: {model_path}).")
+            raise FileNotFoundError(f"ASR Model {model_name} not found at {model_path}. Please enable auto_download.")
 
-    # 2. 确定 Aligner 路径 (如果需要)
+    # --- 2. 准备 Aligner 路径 (如果开启时间戳) ---
     aligner_path = None
     if use_aligner:
+        # 对齐模型固定使用 Qwen3-ForcedAligner-0.6B
         aligner_repo = "Qwen/Qwen3-ForcedAligner-0.6B"
         aligner_folder = "Qwen3-ForcedAligner-0.6B"
         aligner_local_path = os.path.join(ASR_MODELS_DIR, aligner_folder)
         
-        # 检查是否需要下载 Aligner
+        # 检查对齐模型是否存在
         if not os.path.exists(os.path.join(aligner_local_path, "config.json")):
             if auto_download:
-                print(f"[ASR] Creating timestamps requires ForcedAligner, downloading...")
+                print(f"[ASR] Timestamps requested. Downloading ForcedAligner...")
                 try:
                     _download_model_logic(aligner_repo, aligner_local_path, source)
+                    aligner_path = aligner_local_path
                 except Exception as e:
-                    print(f"[Warning] Aligner download failed: {e}. Timestamps may not work.")
+                    raise Exception(f"ForcedAligner Download failed: {e}")
             else:
-                print(f"[Warning] ForcedAligner not found locally. Timestamps will be disabled.")
-        
-        if os.path.exists(os.path.join(aligner_local_path, "config.json")):
+                # 关键修改：如果需要时间戳但没模型且没开下载，直接报错，不能静默跳过
+                raise FileNotFoundError(
+                    f"Timestamps generation requires 'Qwen3-ForcedAligner-0.6B'. "
+                    f"Model not found at {aligner_local_path}. "
+                    f"Please enable 'auto_download_model' to fetch it."
+                )
+        else:
             aligner_path = aligner_local_path
 
-    # 3. 加载模型 (缓存键包含 aligner 状态)
-    cache_key = f"{model_path}_{use_aligner}"
+    # --- 3. 加载模型 (缓存键包含 aligner 状态) ---
+    # 如果之前加载过无时间戳版，现在要用有时间戳版，必须重新加载
+    cache_key = f"{model_path}_aligner:{use_aligner}"
     global LOADED_ASR_MODELS
 
     if cache_key not in LOADED_ASR_MODELS:
+        # 如果显存不够，可以先卸载旧模型
+        # unload_asr_model() 
+        
         print(f"[ASR] Loading {model_name} (Aligner={use_aligner}) to {device}...")
         torch.cuda.empty_cache()
         
@@ -106,22 +116,24 @@ def load_asr_model(model_name, device, auto_download=False, source="ModelScope",
                 "device_map": device, 
             }
             
-            # 注入 aligner 参数
-            if aligner_path:
+            # 关键修复：明确传入 forced_aligner 参数
+            if use_aligner and aligner_path:
+                print(f"[ASR] Attaching ForcedAligner from: {aligner_path}")
                 load_kwargs["forced_aligner"] = aligner_path
                 load_kwargs["forced_aligner_kwargs"] = {
                     "dtype": dtype,
                     "device_map": device
                 }
 
+            # Qwen3ASRModel 是 wrapper，不支持 eval()，直接初始化即可
             model = Qwen3ASRModel.from_pretrained(model_path, **load_kwargs)
-            
-            # [修复] Qwen3ASRModel 是一个 wrapper，没有 eval() 方法，也无需调用。
-            # model.eval()  <--- 已删除此行
             
             LOADED_ASR_MODELS[cache_key] = model
             print("[ASR] Model loaded successfully.")
         except Exception as e:
+            # 加载失败时清理缓存键（如果有）
+            if cache_key in LOADED_ASR_MODELS:
+                del LOADED_ASR_MODELS[cache_key]
             raise Exception(f"Failed to load ASR model: {e}")
 
     return LOADED_ASR_MODELS[cache_key]
