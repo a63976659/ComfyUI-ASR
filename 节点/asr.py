@@ -129,7 +129,7 @@ class Qwen语音识别_Node:
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("文本输出", "JSON详细数据", "带时间戳文本")
     FUNCTION = "transcribe_audio"
-    CATEGORY = "💬 AI人工智能/音频"
+    CATEGORY = "💬 AI人工智能/语音识别"
     DESCRIPTION = "使用 Qwen3-ASR 进行语音识别。"
 
     def transcribe_audio(self, 音频, 模型名称, 语言, 提示词, 生成时间戳, 下载源, 自动下载模型):
@@ -223,7 +223,7 @@ class Qwen批量语音识别_Node:
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("合并文本", "详细日志文本", "带时间戳文本")
     FUNCTION = "batch_transcribe"
-    CATEGORY = "💬 AI人工智能/音频"
+    CATEGORY = "💬 AI人工智能/语音识别"
     DESCRIPTION = "批量处理多个音频片段，输出合并后的文本。"
 
     def batch_transcribe(self, 音频列表, 模型名称, 语言, 提示词, 生成时间戳, 下载源, 自动下载模型):
