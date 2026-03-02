@@ -77,33 +77,121 @@ def save_audio_to_temp(audio_input):
         print(f"[ASR Error] Failed to save temp audio: {e}")
         return None
 
-def format_timestamps(result):
-    """将时间戳结果格式化为易读字符串"""
-    if not hasattr(result, 'time_stamps') or not result.time_stamps:
+def format_time(seconds):
+    """将秒数格式化为 分:秒.毫秒 (MM:SS.xx)"""
+    if seconds is None:
+        return "00:00.00"
+    seconds = float(seconds)
+    m = int(seconds // 60)
+    s = seconds % 60
+    return f"{m:02d}:{s:05.2f}"
+
+def merge_timestamps_by_text(full_text, time_stamps):
+    """
+    将字级时间戳严格按照 [文本输出] 中的标点符号进行对齐和分段。
+    包含：严格获取原生第一个字的 start_time 作为起始，最后一个字的 end_time 作为结束。
+    """
+    merged_list = []
+    if not time_stamps or not full_text:
+        return merged_list
+
+    # 定义所有作为断句依据的标点符号
+    punctuations = set('。！？.!?，,；;、\n')
+    
+    text_ptr = 0
+    text_len = len(full_text)
+
+    current_start = None
+    current_end = None
+    current_segment_text = ""
+
+    for ts in time_stamps:
+        ts_text = getattr(ts, 'text', '').strip()
+        # 完全提取原生时间戳，不做任何大小判断
+        start = getattr(ts, 'start_time', None)
+        end = getattr(ts, 'end_time', None)
+
+        if not ts_text:
+            continue
+
+        # 记录该段落第一个能拿到原声时间戳的起始点
+        if current_start is None and start is not None:
+            current_start = start
+        
+        # 持续覆盖为当前字的结束点
+        if end is not None:
+            current_end = end
+
+        # 在带有标点的完整输出文本中，查找当前 token 的位置
+        found_idx = full_text.find(ts_text, text_ptr)
+        if found_idx == -1:
+            found_idx = full_text.lower().find(ts_text.lower(), text_ptr)
+        
+        if found_idx != -1:
+            # 拼接从当前指针到这个词结束的所有字符
+            chunk = full_text[text_ptr : found_idx + len(ts_text)]
+            current_segment_text += chunk
+            text_ptr = found_idx + len(ts_text)
+        else:
+            current_segment_text += ts_text
+
+        lookahead_ptr = text_ptr
+        has_punctuation = False
+
+        while lookahead_ptr < text_len:
+            c = full_text[lookahead_ptr]
+            if c in punctuations:
+                has_punctuation = True
+                current_segment_text += c
+                lookahead_ptr += 1
+            elif c == ' ':
+                current_segment_text += c
+                lookahead_ptr += 1
+            else:
+                break 
+
+        text_ptr = lookahead_ptr
+
+        # 探测到标点，封口当前这一句
+        if has_punctuation:
+            merged_list.append({
+                "start": current_start if current_start is not None else 0.0,
+                "end": current_end if current_end is not None else 0.0,
+                "text": current_segment_text.strip()
+            })
+            # 重置状态
+            current_start = None
+            current_end = None
+            current_segment_text = ""
+
+    # 兜底：处理最后一段文本
+    if current_segment_text.strip() or current_start is not None:
+         if text_ptr < text_len:
+             current_segment_text += full_text[text_ptr:]
+
+         merged_list.append({
+             "start": current_start if current_start is not None else 0.0,
+             "end": current_end if current_end is not None else 0.0,
+             "text": current_segment_text.strip()
+         })
+
+    return merged_list
+
+def format_timestamps(merged_stamps):
+    """将合并后的时间戳字典列表格式化，并自动换行"""
+    if not merged_stamps:
         return ""
     
     lines = []
-    for ts in result.time_stamps:
-        # 兼容性处理：获取属性
-        start = getattr(ts, 'start_time', 0.0)
-        end = getattr(ts, 'end_time', 0.0)
-        text = getattr(ts, 'text', '')
-        lines.append(f"{start:.2f}-{end:.2f}: {text}")
+    for ts in merged_stamps:
+        start = ts.get('start', 0.0)
+        end = ts.get('end', 0.0)
+        text = ts.get('text', '')
+        # 转换为分钟格式，例如 00:00.00 - 01:05.36
+        lines.append(f"{format_time(start)} - {format_time(end)}: {text}")
+        
     return "\n".join(lines)
 
-def result_to_dict_list(time_stamps):
-    """[修复] 将 ForcedAlignResult 对象列表转换为普通的字典列表，以便 JSON 序列化"""
-    dict_list = []
-    if not time_stamps:
-        return dict_list
-        
-    for ts in time_stamps:
-        dict_list.append({
-            "start": getattr(ts, 'start_time', 0.0),
-            "end": getattr(ts, 'end_time', 0.0),
-            "text": getattr(ts, 'text', '')
-        })
-    return dict_list
 
 # ================= 节点 1: 标准 ASR 节点 =================
 
@@ -136,12 +224,10 @@ class Qwen语音识别_Node:
         
         temp_wav_path = None
         try:
-            # 1. 准备音频
             temp_wav_path = save_audio_to_temp(音频)
             if not temp_wav_path:
                 raise ValueError("Audio processing failed.")
 
-            # 2. 加载模型
             model = load_asr_model(
                 模型名称, 
                 self.device, 
@@ -150,13 +236,11 @@ class Qwen语音识别_Node:
                 use_aligner=生成时间戳
             )
 
-            # 3. 准备参数
             target_lang = ASR_LANGUAGES.get(语言, None)
             context_prompt = 提示词.strip() if 提示词.strip() else None
 
             print(f"[Qwen ASR] Transcribing... Lang: {target_lang if target_lang else 'Auto'}")
             
-            # 4. 执行推理
             kwargs = {
                 "audio": [temp_wav_path],
                 "language": [target_lang] if target_lang else None,
@@ -167,23 +251,21 @@ class Qwen语音识别_Node:
 
             results = model.transcribe(**kwargs)
 
-            # 5. 处理结果
             result = results[0]
             text_output = result.text
             
-            # 构建详细 JSON
             json_data = {
                 "language": result.language,
-                "text": result.text,
+                "text": text_output,
                 "timestamps": []
             }
             
             formatted_ts = ""
             if 生成时间戳:
                 if hasattr(result, 'time_stamps') and result.time_stamps:
-                    # [修复] 必须先转成字典，否则 json.dumps 会报错
-                    json_data["timestamps"] = result_to_dict_list(result.time_stamps)
-                    formatted_ts = format_timestamps(result)
+                    merged_ts = merge_timestamps_by_text(text_output, result.time_stamps)
+                    json_data["timestamps"] = merged_ts
+                    formatted_ts = format_timestamps(merged_ts)
 
             print(f"[Qwen ASR] Detected: {result.language}")
             print(f"[Qwen ASR] Text: {text_output[:50]}...")
@@ -239,7 +321,6 @@ class Qwen批量语音识别_Node:
             if total_files == 0:
                 return ("", "", "")
 
-            # 进度条
             pbar = ProgressBar(total_files)
 
             model = load_asr_model(
@@ -277,13 +358,12 @@ class Qwen批量语音识别_Node:
                     results = model.transcribe(**kwargs)
                     res = results[0]
 
-                    # 1. 文本
                     full_text_list.append(res.text)
                     
-                    # 2. 时间戳
                     current_ts_str = ""
                     if 生成时间戳 and hasattr(res, 'time_stamps'):
-                        current_ts_str = format_timestamps(res)
+                        merged_ts = merge_timestamps_by_text(res.text, res.time_stamps)
+                        current_ts_str = format_timestamps(merged_ts)
                     
                     filename = audio_item.get("filename", f"Audio_{i+1}")
 
@@ -292,7 +372,6 @@ class Qwen批量语音识别_Node:
                         timestamp_text_list.append(current_ts_str)
                         timestamp_text_list.append("")
                     
-                    # 3. 日志
                     log_lines.append(f"--- [{i+1}/{total_files}] {filename} ({res.language}) ---")
                     log_lines.append(res.text)
                     if current_ts_str:
@@ -317,4 +396,3 @@ class Qwen批量语音识别_Node:
             raise Exception(f"Batch ASR Error: {str(e)}")
         finally:
             unload_asr_model()
-
