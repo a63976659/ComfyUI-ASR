@@ -3,7 +3,7 @@
 
 👉这是一个为 ComfyUI 设计的高精度、高性能语音识别插件，核心基于阿里通义千问 Qwen-Audio 系列模型。它不仅能进行普通的语音转文字，还解决了 ComfyUI 处理大量音频时的显存痛点，并提供了原生级的交互体验。
 
-
+# [![Bilibili](https://img.shields.io/badge/bilibili-猪的飞行梦-00A1D6?logo=bilibili&logoColor=white)](https://space.bilibili.com/2114638644)
 ---
 
 ## ✨ 核心优势 (为什么选择它？)
